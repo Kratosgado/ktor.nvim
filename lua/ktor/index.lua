@@ -7,6 +7,7 @@ local M = {}
 ---@field def_range {start_row:number, start_col:number, end_row:number, end_col:number}
 ---@field route_scope_ranges table[] ranges of enclosing route("...") { } blocks, outermost first
 ---@field route_scope_segments string[] path segment text for each entry in route_scope_ranges, same order
+---@field own_segment string the verb call's own literal path argument (e.g. "/students/{id}" in get("/students/{id}")), "" if bare
 ---@field auth_scheme string|nil name from the nearest enclosing authenticate("name") { }
 ---@field auth_range table|nil range of that enclosing authenticate(...) call, if any
 ---@field file string absolute path of the file `bufnr` corresponds to
@@ -303,6 +304,7 @@ local function scan_buffer(bufnr, file, route_functions)
           def_range = node_range(node),
           route_scope_ranges = vim.deepcopy(ctx.scope_ranges),
           route_scope_segments = vim.deepcopy(ctx.path_segments),
+          own_segment = seg,
           auth_scheme = ctx.auth_scheme,
           auth_range = ctx.auth_range,
           file = cur_file,

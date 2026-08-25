@@ -32,5 +32,9 @@ fun Application.configureRouting() {
                 }
             }
         }
+
+        post("/api/v1/test/reset") {
+            call.respond("reset")
+        }
     }
 }

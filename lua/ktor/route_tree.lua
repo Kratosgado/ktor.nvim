@@ -37,13 +37,51 @@ local function strip_internal(node)
   end
 end
 
+---Split "/api/v1" into {"/api", "/v1"}. Every route level - whether it came
+---from an explicit route("...") wrapper or is embedded directly in a bare
+---verb call's own literal argument - gets decomposed into these atomic
+---single-component pieces before building the tree. Without this, the same
+---logical prefix written two different ways (one route("/api/v1") call vs.
+---nested route("/api") { route("/v1") { ... } } vs. embedded directly in a
+---wrapper-less post("/api/v1/test/reset") call) would each produce distinct,
+---un-mergeable tree nodes - which is exactly what caused both "/api/v1"
+---showing up as multiple separate siblings and endpoints with no route()
+---wrapper at all (own_segment carrying their whole path) rendering as
+---disconnected top-level entries instead of nesting under their real prefix.
+---@param text string|nil
+---@return string[]
+local function split_path_segments(text)
+  local pieces = {}
+  if not text or text == "" then
+    return pieces
+  end
+  for piece in text:gmatch("[^/]+") do
+    table.insert(pieces, "/" .. piece)
+  end
+  return pieces
+end
+
+---@param current KtorTreeNode
+---@param segment string
+---@return KtorTreeNode
+local function descend(current, segment)
+  local key = "route:" .. segment
+  local node = current._index[key]
+  if not node then
+    node = { kind = "route", label = segment, children = {}, _index = {} }
+    table.insert(current.children, node)
+    current._index[key] = node
+  end
+  return node
+end
+
 ---Build a nested route tree from a flat endpoint list. Nodes are grouped by
----PATH TEXT (route_scope_segments) rather than by which literal route("...")
----{ } call produced them: large Ktor apps commonly split routes across many
----files that each independently open their own `route("/api/v1") { ... }`,
----and those should all merge into one "/api/v1" node in the tree rather than
----appearing as separate siblings per file. Same idea for auth markers - two
----authenticate("jwt") blocks in different files merge into one "jwt" node.
+---atomic path-component text rather than by which literal route("...") { }
+---call (or bare verb-call literal) produced them, so the same logical prefix
+---always merges into one node regardless of how the source code structures
+---its route()/verb calls. Auth markers merge the same way - two
+---authenticate("jwt") blocks anywhere under the same parent become one
+---"jwt" node.
 ---@param endpoints KtorEndpoint[]
 ---@return KtorTreeNode root
 function M.build_tree(endpoints)
@@ -52,16 +90,11 @@ function M.build_tree(endpoints)
   for _, ep in ipairs(endpoints) do
     local current = root
 
-    for i, range in ipairs(ep.route_scope_ranges) do
+    for i in ipairs(ep.route_scope_ranges) do
       local segment = (ep.route_scope_segments and ep.route_scope_segments[i]) or ""
-      local key = "route:" .. segment
-      local node = current._index[key]
-      if not node then
-        node = { kind = "route", label = segment, bufnr = ep.bufnr, range = range, children = {}, _index = {} }
-        table.insert(current.children, node)
-        current._index[key] = node
+      for _, piece in ipairs(split_path_segments(segment)) do
+        current = descend(current, piece)
       end
-      current = node
     end
 
     if ep.auth_scheme then
@@ -80,6 +113,10 @@ function M.build_tree(endpoints)
         current._index[key] = node
       end
       current = node
+    end
+
+    for _, piece in ipairs(split_path_segments(ep.own_segment)) do
+      current = descend(current, piece)
     end
 
     table.insert(current.children, {
