@@ -84,6 +84,23 @@ local function jump_under_cursor()
   require("ktor.jump").jump_to_range(node.bufnr, node.range)
 end
 
+---Prompt for a filter query and re-render with it applied, hiding
+---non-matching endpoints (and any route/auth node left with no matching
+---descendants) - the same `route_tree.filter_endpoints` mechanism
+---`:KtorRouteTree <query>` uses, just triggered from inside the window
+---instead of requiring the command to be re-run with an argument. Native `/`
+---search only moves the cursor and highlights matches, it doesn't hide
+---anything, which is why `/` is remapped to this instead.
+local function prompt_filter()
+  vim.ui.input({ prompt = "Filter routes: ", default = state.query or "" }, function(input)
+    if input == nil then
+      return
+    end
+    state.query = input ~= "" and input or nil
+    build_and_render()
+  end)
+end
+
 ---Used as a 'foldtext' callback: swaps the expanded arrow for the collapsed
 ---one so a closed fold reads like a toggled node, not a "+-- N lines" banner.
 function M._foldtext()
@@ -177,6 +194,7 @@ local function set_keymaps(bufnr)
   vim.keymap.set("n", "l", "zo", opts)
   vim.keymap.set("n", "h", "zc", opts)
   vim.keymap.set("n", "o", jump_under_cursor, opts)
+  vim.keymap.set("n", "/", prompt_filter, opts)
   vim.keymap.set("n", "R", function()
     require("ktor.index").refresh()
   end, opts)

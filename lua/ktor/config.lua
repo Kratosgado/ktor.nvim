@@ -3,6 +3,7 @@ local M = {}
 ---@class KtorConfig
 ---@field code_lens {enabled: boolean, style: "virt_lines"|"eol"}
 ---@field route_tree {display: "float"|"split", width: number, split_side: "left"|"right"}
+---@field picker {backend: "auto"|"fzf"|"telescope"}
 M.defaults = {
   code_lens = {
     enabled = true,
@@ -12,6 +13,9 @@ M.defaults = {
     display = "float",
     width = 60,
     split_side = "left",
+  },
+  picker = {
+    backend = "auto",
   },
 }
 

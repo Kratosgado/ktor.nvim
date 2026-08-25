@@ -28,8 +28,25 @@ local VERBS = {
 -- runaway/cyclic recursion.
 local MAX_EXPANSION_DEPTH = 12
 
----@type table<string, KtorEndpoint[]> absolute file path -> endpoints found in that file
+---@type table<string, KtorEndpoint[]> absolute file path -> endpoints found scanning that file as a root
 local by_file = {}
+
+---@class KtorRouteFunctionEntry
+---@field bufnr number
+---@field file string
+---@field body TSNode
+
+---@type table<string, KtorRouteFunctionEntry> `fun Route.<name>()` name -> where it's defined, project-wide
+local route_functions = {}
+
+---@type table<string, string[]> file -> names it currently contributes to route_functions
+local route_functions_by_file = {}
+
+---@type table<string, table<string, boolean>> file -> set of root files whose last scan expanded through it
+local dependents = {}
+
+---@type table<string, table<string, boolean>> root file -> set of files its last scan expanded through
+local scan_deps = {}
 
 ---@type (fun(bufnr: number|nil))[]
 local subscribers = {}
@@ -239,9 +256,10 @@ end
 ---unresolved call inside a routing scope matches a known one.
 ---@param bufnr number
 ---@param file string
----@param route_functions table<string, KtorRouteFunction>
+---@param route_fns table<string, KtorRouteFunction>
+---@param deps table<string, boolean> output: every file reached via expansion during this scan
 ---@return KtorEndpoint[]
-local function scan_buffer(bufnr, file, route_functions)
+local function scan_buffer(bufnr, file, route_fns, deps)
   local ok_parser, parser = pcall(vim.treesitter.get_parser, bufnr, "kotlin")
   if not ok_parser or not parser then
     return {}
@@ -310,11 +328,12 @@ local function scan_buffer(bufnr, file, route_functions)
           file = cur_file,
         })
         -- fall through: still walk children below in case of nested calls
-      elseif name and route_functions[name] and depth < MAX_EXPANSION_DEPTH then
+      elseif name and route_fns[name] and depth < MAX_EXPANSION_DEPTH then
         -- Unresolved call at a routing-scope statement position matching a
         -- known `fun Route.<name>()` elsewhere - inline its body here,
         -- carrying over the current path/auth context.
-        local target = route_functions[name]
+        local target = route_fns[name]
+        deps[target.file] = true
         local ok_expand, err = pcall(walk, target.bufnr, target.file, target.body, ctx, depth + 1)
         if not ok_expand then
           vim.notify("ktor.index: failed expanding " .. name .. "(): " .. tostring(err), vim.log.levels.DEBUG)
@@ -369,19 +388,38 @@ local function ensure_buffer(file)
   return bufnr
 end
 
----Rescan every *.kt file under cwd: first collect all `fun Route.*`
----extension functions project-wide (so call sites can resolve regardless of
----scan order), then walk each file's own routing{} entry points, expanding
----into referenced functions - possibly defined in a different file - as
----needed. Runs on every debounced edit, not just explicit refresh(), since
----an edit anywhere can change what a routing{} block elsewhere resolves to.
----@param notify_bufnr number|nil forwarded to notify() once done
-local function full_rescan(notify_bufnr)
+---Record which files a root file's scan expanded through, so a later edit
+---to any of them knows to re-walk that root (see `dependents`/`scan_deps`).
+---Removes stale edges left over from a previous scan of the same root.
+---@param root_file string
+---@param new_deps table<string, boolean>
+local function update_dependents(root_file, new_deps)
+  local old_deps = scan_deps[root_file] or {}
+  for dep in pairs(old_deps) do
+    if not new_deps[dep] and dependents[dep] then
+      dependents[dep][root_file] = nil
+    end
+  end
+  for dep in pairs(new_deps) do
+    dependents[dep] = dependents[dep] or {}
+    dependents[dep][root_file] = true
+  end
+  scan_deps[root_file] = new_deps
+end
+
+---Full project-wide rescan: collect every `fun Route.*` extension function
+---across all files first (so call sites resolve regardless of scan order),
+---then walk each file's own routing{} entry points, expanding into
+---referenced functions - possibly in a different file - as needed. This is
+---the only path that walks the *whole* project; only call it for an
+---explicit, user-requested refresh (see M.refresh / :KtorRefresh) - a debounced
+---per-edit rescan uses the far cheaper smart_rescan below instead.
+local function full_rescan()
   local cwd = vim.fn.getcwd()
   local files = vim.fn.globpath(cwd, "**/*.kt", false, true)
 
-  ---@type table<string, KtorRouteFunction>
-  local route_functions = {}
+  route_functions = {}
+  route_functions_by_file = {}
   ---@type table<string, number>
   local file_bufnrs = {}
 
@@ -390,24 +428,84 @@ local function full_rescan(notify_bufnr)
     local bufnr = ensure_buffer(key)
     if bufnr then
       file_bufnrs[key] = bufnr
+      local owned = {}
       for name, body in pairs(collect_route_functions(bufnr)) do
         route_functions[name] = { bufnr = bufnr, file = key, body = body }
+        table.insert(owned, name)
       end
+      route_functions_by_file[key] = owned
     end
   end
 
   local new_by_file = {}
+  dependents = {}
+  scan_deps = {}
   for key, bufnr in pairs(file_bufnrs) do
-    new_by_file[key] = scan_buffer(bufnr, key, route_functions)
+    local deps = {}
+    new_by_file[key] = scan_buffer(bufnr, key, route_functions, deps)
+    update_dependents(key, deps)
   end
   by_file = new_by_file
 
-  notify(notify_bufnr)
+  notify(nil)
 end
 
----Force a full project-wide rescan.
+---Force a full project-wide rescan. The only place that walks every file -
+---call explicitly (:KtorRefresh, or the route tree's `R`), not on each edit.
 function M.refresh()
-  full_rescan(nil)
+  full_rescan()
+end
+
+---Lightweight rescan for a single edited buffer: refreshes just this file's
+---own `fun Route.*` declarations (so callers elsewhere see fresh bodies),
+---then re-walks only this file's own routing{} entry points plus whichever
+---OTHER root files' last scan expanded through it - not the whole project.
+---A brand-new file that hasn't been scanned yet (never opened/edited this
+---session) won't be discovered by referencing it elsewhere until the next
+---M.refresh(); that's expected, not a bug - full scans are opt-in now.
+---@param bufnr number
+local function smart_rescan(bufnr)
+  if not vim.api.nvim_buf_is_valid(bufnr) then
+    return
+  end
+  local name = vim.api.nvim_buf_get_name(bufnr)
+  if name == "" then
+    return
+  end
+  local file = file_key(name)
+
+  local old_owned = route_functions_by_file[file] or {}
+  local fresh = collect_route_functions(bufnr)
+  for _, old_name in ipairs(old_owned) do
+    if not fresh[old_name] then
+      route_functions[old_name] = nil
+    end
+  end
+  local owned = {}
+  for fn_name, body in pairs(fresh) do
+    route_functions[fn_name] = { bufnr = bufnr, file = file, body = body }
+    table.insert(owned, fn_name)
+  end
+  route_functions_by_file[file] = owned
+
+  ---@type table<string, boolean>
+  local roots = { [file] = true }
+  for root in pairs(dependents[file] or {}) do
+    roots[root] = true
+  end
+
+  for root_file in pairs(roots) do
+    local root_bufnr = ensure_buffer(root_file)
+    if root_bufnr then
+      local deps = {}
+      by_file[root_file] = scan_buffer(root_bufnr, root_file, route_functions, deps)
+      update_dependents(root_file, deps)
+    else
+      by_file[root_file] = nil
+    end
+  end
+
+  notify(bufnr)
 end
 
 ---@return KtorEndpoint[]
@@ -439,7 +537,7 @@ local function debounced_rescan(bufnr)
       timer:stop()
       timer:close()
       debounce_timers[bufnr] = nil
-      full_rescan(bufnr)
+      smart_rescan(bufnr)
     end)
   )
 end

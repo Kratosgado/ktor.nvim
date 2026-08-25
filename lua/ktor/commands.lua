@@ -12,18 +12,18 @@ function M.setup()
     require("ktor.codelens").toggle()
   end, { desc = "Toggle Ktor endpoint code lens" })
 
-  vim.api.nvim_create_user_command("KtorCodeLensEnable", function()
-    require("ktor.codelens").enable()
-  end, { desc = "Enable Ktor endpoint code lens" })
-
-  vim.api.nvim_create_user_command("KtorCodeLensDisable", function()
-    require("ktor.codelens").disable()
-  end, { desc = "Disable Ktor endpoint code lens" })
-
   vim.api.nvim_create_user_command("KtorRouteTree", function(cmd_opts)
     local query = cmd_opts.args ~= "" and cmd_opts.args or nil
     require("ktor.ui.tree_window").open(query)
   end, { nargs = "?", desc = "Open the Ktor route tree" })
+
+  vim.api.nvim_create_user_command("KtorRefresh", function()
+    require("ktor.index").refresh()
+  end, { desc = "Full project-wide Ktor route rescan" })
+
+  vim.api.nvim_create_user_command("KtorEndpoints", function()
+    require("ktor.picker").open()
+  end, { desc = "Fuzzy-find Ktor endpoints (fzf-lua or telescope)" })
 end
 
 return M
