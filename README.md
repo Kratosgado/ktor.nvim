@@ -119,8 +119,12 @@ straight to its definition via the same `jump_to_range` the route tree uses.
 | `:KtorEndpoints`         | Fuzzy-find endpoints (fzf-lua or telescope)   |
 | `:KtorRefresh`           | Full project-wide rescan (manual only)        |
 
-ktor.nvim doesn't bind any global keymaps itself - wire up whatever you want
-in your own config, e.g. via lazy.nvim's `keys`:
+### Keymaps
+
+ktor.nvim doesn't bind any global keymaps itself - none of these commands are
+mapped by default, so add whatever you want in your own config. With
+lazy.nvim, the `keys` field on the plugin spec is the natural place, since it
+also lazy-loads on first press:
 
 ```lua
 keys = {
@@ -131,6 +135,25 @@ keys = {
 },
 ```
 
+Without lazy.nvim (or to scope it more precisely), map the commands directly
+in an `ftplugin/kotlin.lua` or a `FileType kotlin` autocmd instead:
+
+```lua
+vim.api.nvim_create_autocmd("FileType", {
+  pattern = "kotlin",
+  callback = function(args)
+    local opts = { buffer = args.buf, silent = true }
+    vim.keymap.set("n", "<leader>kt", "<cmd>KtorRouteTree<cr>", opts)
+    vim.keymap.set("n", "<leader>kl", "<cmd>KtorCodeLensToggle<cr>", opts)
+    vim.keymap.set("n", "<leader>ke", "<cmd>KtorEndpoints<cr>", opts)
+    vim.keymap.set("n", "<leader>kr", "<cmd>KtorRefresh<cr>", opts)
+  end,
+})
+```
+
+The tree window's own keymaps (fold/jump/filter/refresh/close) are separate
+from these - they're buffer-local to the tree and always active, see below.
+
 ### Keymaps (in the tree window)
 
 | Key                  | Effect                                              |
@@ -139,7 +162,7 @@ keys = {
 | `l`                    | Open (expand) fold under cursor                    |
 | `h`                    | Close (collapse) fold under cursor                 |
 | `o`                    | Jump to the route/`authenticate` block under cursor (closes the tree if it's a float; a split stays open) |
-| `/`                    | Native Neovim search within the tree                |
+| `/`                    | Prompt for a filter query, hiding non-matching endpoints (same as `:KtorRouteTree <query>`) |
 | `R`                    | Re-run `ktor.index.refresh()` and redraw            |
 | `q`                    | Close the window                                    |
 
