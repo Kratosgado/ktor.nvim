@@ -24,6 +24,10 @@ function M.setup()
 	vim.api.nvim_create_user_command("KtorEndpoints", function()
 		require("ktor.picker").open()
 	end, { desc = "Fuzzy-find Ktor endpoints (fzf-lua or telescope)" })
+
+	vim.api.nvim_create_user_command("KtorGenerateRequest", function()
+		require("ktor.request").open_at_cursor()
+	end, { desc = "Generate a kulala request for the endpoint under cursor" })
 end
 
 return M

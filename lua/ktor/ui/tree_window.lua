@@ -48,6 +48,26 @@ local function build_and_render()
   end
 end
 
+---Switch focus to the window the tree was opened from (or split off a new
+---one if that's gone), so a caller can act in a real, non-floating window
+---instead of the tree's own scratch buffer. Closes the tree first if it's a
+---float - a float sits on top of the editor like a picker, so acting on a
+---selection should dismiss it; a split behaves like a persistent sidebar and
+---stays open.
+local function focus_prev_win()
+  local is_float = require("ktor.config").get().route_tree.display == "float"
+
+  if state.prev_win and vim.api.nvim_win_is_valid(state.prev_win) then
+    vim.api.nvim_set_current_win(state.prev_win)
+  else
+    vim.cmd("split")
+  end
+
+  if is_float then
+    close()
+  end
+end
+
 local function jump_under_cursor()
   if not is_open() then
     return
@@ -62,26 +82,23 @@ local function jump_under_cursor()
     return
   end
 
-  local is_float = require("ktor.config").get().route_tree.display == "float"
-
-  -- Jump in the window the tree was opened from, not the tree's own window
-  -- (jump.jump_to_range operates on the current window; doing this in-place
-  -- would replace the tree's scratch buffer, and bufhidden=wipe deletes it).
-  if state.prev_win and vim.api.nvim_win_is_valid(state.prev_win) then
-    vim.api.nvim_set_current_win(state.prev_win)
-  else
-    -- no valid window to jump in (e.g. tree was the only window left) -
-    -- split off a new one rather than clobbering the tree's own buffer.
-    vim.cmd("split")
-  end
-
-  -- A float sits on top of the editor like a picker; jumping should
-  -- dismiss it. A split behaves like a persistent sidebar and stays open.
-  if is_float then
-    close()
-  end
-
+  focus_prev_win()
   require("ktor.jump").jump_to_range(node.bufnr, node.range)
+end
+
+local function generate_request_under_cursor()
+  if not is_open() then
+    return
+  end
+  local row = vim.api.nvim_win_get_cursor(state.winid)[1]
+  local entry = state.meta[row]
+  local node = entry and entry.node
+  if not (node and node.kind == "endpoint" and node.endpoint) then
+    return
+  end
+
+  focus_prev_win()
+  require("ktor.request").open(node.endpoint)
 end
 
 ---Prompt for a filter query and re-render with it applied, hiding
@@ -194,6 +211,7 @@ local function set_keymaps(bufnr)
   vim.keymap.set("n", "l", "zo", opts)
   vim.keymap.set("n", "h", "zc", opts)
   vim.keymap.set("n", "o", jump_under_cursor, opts)
+  vim.keymap.set("n", "y", generate_request_under_cursor, opts)
   vim.keymap.set("n", "/", prompt_filter, opts)
   vim.keymap.set("n", "R", function()
     require("ktor.index").refresh()

@@ -31,6 +31,15 @@ local MAX_EXPANSION_DEPTH = 12
 ---@type table<string, KtorEndpoint[]> absolute file path -> endpoints found scanning that file as a root
 local by_file = {}
 
+---@class KtorUnresolvedCall
+---@field bufnr number
+---@field file string
+---@field name string the call's own name, e.g. "authRoutes"
+---@field range {start_row:number, start_col:number, end_row:number, end_col:number}
+
+---@type table<string, KtorUnresolvedCall[]> absolute file path -> unresolved route-scope calls found scanning that file as a root
+local by_file_unresolved = {}
+
 ---@class KtorRouteFunctionEntry
 ---@field bufnr number
 ---@field file string
@@ -155,6 +164,29 @@ local function first_string_arg(bufnr, call_expr)
   return nil
 end
 
+---@param call_expr TSNode
+---@return boolean
+local function has_trailing_lambda(call_expr)
+  for suffix in call_expr:iter_children() do
+    if suffix:type() == "call_suffix" then
+      for c in suffix:iter_children() do
+        if c:type() == "annotated_lambda" then
+          return true
+        end
+      end
+    end
+  end
+  return false
+end
+
+---@param node TSNode
+---@return boolean whether this call sits directly in a statements block, i.e.
+---is a bare top-level statement rather than nested inside some expression
+local function is_statement_call(node)
+  local parent = node:parent()
+  return parent ~= nil and parent:type() == "statements"
+end
+
 ---@param segments string[]
 ---@return string
 local function join_segments(segments)
@@ -245,6 +277,7 @@ end
 ---@field auth_scheme string|nil
 ---@field auth_range table|nil
 ---@field in_scope boolean whether we're actually inside a routing{} block right now - false while just walking a file top-down looking for one, so a bare verb call in a `fun Route.*` body isn't mistaken for a real endpoint when that file is scanned on its own
+---@field in_route_body boolean true directly inside a routing{}/route(){}/authenticate(){} body (where a sibling of get()/post()/route() lives); false once inside a verb's own handler body, so ordinary business-logic calls in a handler aren't mistaken for unresolved route delegation
 
 ---@class KtorRouteFunction
 ---@field bufnr number
@@ -253,13 +286,17 @@ end
 
 ---Walk a buffer's own routing{} entry points, expanding into referenced
 ---`fun Route.*` extension functions (possibly in other files) wherever an
----unresolved call inside a routing scope matches a known one.
+---unresolved call inside a routing scope matches a known one. Bare calls
+---that look like they *should* be route delegation (no trailing lambda,
+---directly inside a route body, not a known name) but don't resolve to any
+---`fun Route.*` get collected into `unresolved` for diagnostics.
 ---@param bufnr number
 ---@param file string
 ---@param route_fns table<string, KtorRouteFunction>
 ---@param deps table<string, boolean> output: every file reached via expansion during this scan
+---@param unresolved KtorUnresolvedCall[] output: unresolved route-body delegation calls
 ---@return KtorEndpoint[]
-local function scan_buffer(bufnr, file, route_fns, deps)
+local function scan_buffer(bufnr, file, route_fns, deps, unresolved)
   local ok_parser, parser = pcall(vim.treesitter.get_parser, bufnr, "kotlin")
   if not ok_parser or not parser then
     return {}
@@ -281,7 +318,7 @@ local function scan_buffer(bufnr, file, route_fns, deps)
     if node:type() == "call_expression" then
       local name = callee_name(cur_bufnr, node)
       if name == "routing" then
-        local new_ctx = vim.tbl_extend("force", ctx, { in_scope = true })
+        local new_ctx = vim.tbl_extend("force", ctx, { in_scope = true, in_route_body = true })
         for child in node:iter_children() do
           walk(cur_bufnr, cur_file, child, new_ctx, depth)
         end
@@ -294,6 +331,7 @@ local function scan_buffer(bufnr, file, route_fns, deps)
           auth_scheme = ctx.auth_scheme,
           auth_range = ctx.auth_range,
           in_scope = ctx.in_scope,
+          in_route_body = true,
         }
         for child in node:iter_children() do
           walk(cur_bufnr, cur_file, child, new_ctx, depth)
@@ -307,6 +345,7 @@ local function scan_buffer(bufnr, file, route_fns, deps)
           auth_scheme = scheme or ctx.auth_scheme,
           auth_range = scheme and node_range(node) or ctx.auth_range,
           in_scope = ctx.in_scope,
+          in_route_body = true,
         }
         for child in node:iter_children() do
           walk(cur_bufnr, cur_file, child, new_ctx, depth)
@@ -327,7 +366,14 @@ local function scan_buffer(bufnr, file, route_fns, deps)
           auth_range = ctx.auth_range,
           file = cur_file,
         })
-        -- fall through: still walk children below in case of nested calls
+        -- still walk the handler body below, but no longer "in a route
+        -- body" - a bare call in here is just business logic, not a
+        -- candidate route delegation.
+        local handler_ctx = vim.tbl_extend("force", ctx, { in_route_body = false })
+        for child in node:iter_children() do
+          walk(cur_bufnr, cur_file, child, handler_ctx, depth)
+        end
+        return
       elseif name and route_fns[name] and depth < MAX_EXPANSION_DEPTH then
         -- Unresolved call at a routing-scope statement position matching a
         -- known `fun Route.<name>()` elsewhere - inline its body here,
@@ -339,6 +385,17 @@ local function scan_buffer(bufnr, file, route_fns, deps)
           vim.notify("ktor.index: failed expanding " .. name .. "(): " .. tostring(err), vim.log.levels.DEBUG)
         end
         return
+      elseif
+        name
+        and ctx.in_scope
+        and ctx.in_route_body
+        and not has_trailing_lambda(node)
+        and is_statement_call(node)
+      then
+        -- Looks exactly like a route-delegation call (bare statement, no
+        -- trailing lambda, directly in a route body) but doesn't match any
+        -- known `fun Route.*` - probably a real gap, not necessarily one.
+        table.insert(unresolved, { bufnr = cur_bufnr, file = cur_file, name = name, range = node_range(node) })
       end
     end
     for child in node:iter_children() do
@@ -347,14 +404,14 @@ local function scan_buffer(bufnr, file, route_fns, deps)
   end
 
   local root = trees[1]:root()
-  local ok_walk, err = pcall(
-    walk,
-    bufnr,
-    file,
-    root,
-    { path_segments = {}, scope_ranges = {}, auth_scheme = nil, auth_range = nil, in_scope = false },
-    0
-  )
+  local ok_walk, err = pcall(walk, bufnr, file, root, {
+    path_segments = {},
+    scope_ranges = {},
+    auth_scheme = nil,
+    auth_range = nil,
+    in_scope = false,
+    in_route_body = false,
+  }, 0)
   if not ok_walk then
     vim.notify("ktor.index: parse walk failed for " .. file .. ": " .. tostring(err), vim.log.levels.DEBUG)
     return {}
@@ -438,14 +495,18 @@ local function full_rescan()
   end
 
   local new_by_file = {}
+  local new_by_file_unresolved = {}
   dependents = {}
   scan_deps = {}
   for key, bufnr in pairs(file_bufnrs) do
     local deps = {}
-    new_by_file[key] = scan_buffer(bufnr, key, route_functions, deps)
+    local unresolved = {}
+    new_by_file[key] = scan_buffer(bufnr, key, route_functions, deps, unresolved)
+    new_by_file_unresolved[key] = unresolved
     update_dependents(key, deps)
   end
   by_file = new_by_file
+  by_file_unresolved = new_by_file_unresolved
 
   notify(nil)
 end
@@ -498,10 +559,13 @@ local function smart_rescan(bufnr)
     local root_bufnr = ensure_buffer(root_file)
     if root_bufnr then
       local deps = {}
-      by_file[root_file] = scan_buffer(root_bufnr, root_file, route_functions, deps)
+      local unresolved = {}
+      by_file[root_file] = scan_buffer(root_bufnr, root_file, route_functions, deps, unresolved)
+      by_file_unresolved[root_file] = unresolved
       update_dependents(root_file, deps)
     else
       by_file[root_file] = nil
+      by_file_unresolved[root_file] = nil
     end
   end
 
@@ -513,6 +577,18 @@ function M.get_endpoints()
   local all = {}
   for _, endpoints in pairs(by_file) do
     vim.list_extend(all, endpoints)
+  end
+  return all
+end
+
+---Calls that sit exactly where a route delegation would (bare statement,
+---no trailing lambda, directly inside a routing{}/route(){}/authenticate(){}
+---body) but don't match any known `fun Route.*` - probably a real gap.
+---@return KtorUnresolvedCall[]
+function M.get_unresolved_calls()
+  local all = {}
+  for _, calls in pairs(by_file_unresolved) do
+    vim.list_extend(all, calls)
   end
   return all
 end

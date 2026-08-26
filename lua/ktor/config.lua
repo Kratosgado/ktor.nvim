@@ -4,6 +4,7 @@ local M = {}
 ---@field code_lens {enabled: boolean, style: "virt_lines"|"eol"}
 ---@field route_tree {display: "float"|"split", width: number, split_side: "left"|"right"}
 ---@field picker {backend: "auto"|"fzf"|"telescope"}
+---@field diagnostics {enabled: boolean}
 M.defaults = {
   code_lens = {
     enabled = true,
@@ -16,6 +17,9 @@ M.defaults = {
   },
   picker = {
     backend = "auto",
+  },
+  diagnostics = {
+    enabled = true,
   },
 }
 

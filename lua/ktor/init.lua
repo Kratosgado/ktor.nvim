@@ -6,6 +6,7 @@ function M.setup(opts)
 	require("ktor.highlights").setup()
 	require("ktor.index")
 	require("ktor.codelens").setup()
+	require("ktor.diagnostics").setup()
 	require("ktor.commands").setup()
 end
 
