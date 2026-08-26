@@ -7,8 +7,7 @@ cursor, and a full route-tree visualizer for the project.
 
 ```lua
 {
-  dir = "~/projects/configs/ktor.nvim",
-  name = "ktor.nvim",
+  "kratosgado/ktor.nvim"
   ft = "kotlin",
   dependencies = { "nvim-treesitter/nvim-treesitter" },
   opts = {},
@@ -70,14 +69,14 @@ route("/api/v1") {
 The method is colored per verb via highlight groups (override any of these
 with `vim.api.nvim_set_hl`):
 
-| Group               | Default link      |
-| -------------------- | ------------------ |
-| `KtorMethodGet`      | `DiagnosticOk`     |
-| `KtorMethodPost`     | `DiagnosticInfo`   |
-| `KtorMethodPut`      | `DiagnosticWarn`   |
-| `KtorMethodPatch`    | `DiagnosticWarn`   |
-| `KtorMethodDelete`   | `DiagnosticError`  |
-| `KtorAuthScheme`     | `Comment` (italic) |
+| Group              | Default link       |
+| ------------------ | ------------------ |
+| `KtorMethodGet`    | `DiagnosticOk`     |
+| `KtorMethodPost`   | `DiagnosticInfo`   |
+| `KtorMethodPut`    | `DiagnosticWarn`   |
+| `KtorMethodPatch`  | `DiagnosticWarn`   |
+| `KtorMethodDelete` | `DiagnosticError`  |
+| `KtorAuthScheme`   | `Comment` (italic) |
 
 ## Route Tree Visualizer
 
@@ -112,12 +111,12 @@ straight to its definition via the same `jump_to_range` the route tree uses.
 
 ## Commands
 
-| Command                 | Effect                                       |
-| ------------------------ | --------------------------------------------- |
-| `:KtorCodeLensToggle`    | Toggle code lens on/off                       |
-| `:KtorRouteTree [query]` | Open the route tree, optionally pre-filtered  |
-| `:KtorEndpoints`         | Fuzzy-find endpoints (fzf-lua or telescope)   |
-| `:KtorRefresh`           | Full project-wide rescan (manual only)        |
+| Command                  | Effect                                       |
+| ------------------------ | -------------------------------------------- |
+| `:KtorCodeLensToggle`    | Toggle code lens on/off                      |
+| `:KtorRouteTree [query]` | Open the route tree, optionally pre-filtered |
+| `:KtorEndpoints`         | Fuzzy-find endpoints (fzf-lua or telescope)  |
+| `:KtorRefresh`           | Full project-wide rescan (manual only)       |
 
 ### Keymaps
 
@@ -156,15 +155,15 @@ from these - they're buffer-local to the tree and always active, see below.
 
 ### Keymaps (in the tree window)
 
-| Key                  | Effect                                              |
-| --------------------- | ---------------------------------------------------- |
-| `<Tab>` / `<CR>` / `za` | Toggle fold under cursor                          |
-| `l`                    | Open (expand) fold under cursor                    |
-| `h`                    | Close (collapse) fold under cursor                 |
-| `o`                    | Jump to the route/`authenticate` block under cursor (closes the tree if it's a float; a split stays open) |
-| `/`                    | Prompt for a filter query, hiding non-matching endpoints (same as `:KtorRouteTree <query>`) |
-| `R`                    | Re-run `ktor.index.refresh()` and redraw            |
-| `q`                    | Close the window                                    |
+| Key                     | Effect                                                                                                    |
+| ----------------------- | --------------------------------------------------------------------------------------------------------- |
+| `<Tab>` / `<CR>` / `za` | Toggle fold under cursor                                                                                  |
+| `l`                     | Open (expand) fold under cursor                                                                           |
+| `h`                     | Close (collapse) fold under cursor                                                                        |
+| `o`                     | Jump to the route/`authenticate` block under cursor (closes the tree if it's a float; a split stays open) |
+| `/`                     | Prompt for a filter query, hiding non-matching endpoints (same as `:KtorRouteTree <query>`)               |
+| `R`                     | Re-run `ktor.index.refresh()` and redraw                                                                  |
+| `q`                     | Close the window                                                                                          |
 
 ## Architecture
 
