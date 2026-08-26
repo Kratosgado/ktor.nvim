@@ -36,8 +36,12 @@ local function request_block(ep)
   if BODY_METHODS[ep.method] then
     table.insert(lines, "Content-Type: application/json")
     table.insert(lines, "")
-    table.insert(lines, "{")
-    table.insert(lines, "}")
+    -- best-effort: if the handler does call.receive<T>() and T resolves to
+    -- a known data class, use a type-aware skeleton; otherwise a bare stub.
+    local ok, body_lines = pcall(function()
+      return require("ktor.body_gen").body_lines_for(ep)
+    end)
+    vim.list_extend(lines, (ok and body_lines) or { "{", "}" })
   end
 
   return lines

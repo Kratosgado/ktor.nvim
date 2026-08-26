@@ -142,18 +142,36 @@ Disable with `diagnostics = { enabled = false }`.
 Turns an endpoint into a ready-to-run [kulala.nvim](https://github.com/mistweaverco/kulala.nvim)
 `.http` request - a `@base_url` default so it runs with zero setup, method,
 URL (path params become `{{param}}` placeholders), an
-`Authorization: Bearer {{token}}` stub if it's auth-protected, and a JSON
-body stub for POST/PUT/PATCH. Triggered with `y` in the route tree,
+`Authorization: Bearer {{token}}` stub if it's auth-protected, and for
+POST/PUT/PATCH, a JSON body. Triggered with `y` in the route tree,
 `<C-y>`/`ctrl-y` in the endpoints picker, or `:KtorGenerateRequest`
 (suggested as `<leader>kg`) for whatever endpoint contains the cursor
 directly in Kotlin source.
 
+If the handler does `call.receive<T>()`, and `T` resolves to a known
+`data class` anywhere in the project, the body is a type-aware skeleton
+instead of a bare `{}` - `String`→`""`, numeric types→`0`, `Boolean`→`false`,
+nullable fields→`null`, `List<T>`→one placeholder element, `enum class`→its
+first entry, nested `data class`→recurses (capped at 5 levels deep).
+Anything it can't resolve (no `call.receive<T>()`, an unknown type, a bare
+`call.receive()` relying on type inference) falls back to `{}` rather than
+guessing wrong.
+
 ```http
 @base_url = http://localhost:8080
 
-### GET /api/v1/schools/{schoolId}/students/{id}  [admin-jwt]
-GET {{base_url}}/api/v1/schools/{{schoolId}}/students/{{id}}
-Authorization: Bearer {{token}}
+### POST /api/v1/students
+POST {{base_url}}/api/v1/students
+Content-Type: application/json
+
+{
+  "name": "",
+  "age": 0,
+  "address": {
+    "street": "",
+    "city": ""
+  }
+}
 ```
 
 Appended as a new `###`-delimited block to a shared scratch file at
@@ -253,7 +271,11 @@ from these - they're buffer-local to the tree and always active, see below.
 - `lua/ktor/diagnostics.lua` — duplicate/ambiguous route and unresolved-call
   detection, applied via `vim.diagnostic`.
 - `lua/ktor/request.lua` — pure `generate(ep)` (kulala-ready `.http` text)
-  plus `open(ep)`, which writes it to a scratch file and opens it in the
+  plus `open(ep)`, which appends it to a scratch file and opens it in the
   current (non-floating) window; `open_at_cursor()` resolves `ep` from the
   cursor position in Kotlin source. Shared by the route tree's `y`, the
   picker's `<C-y>`, and `:KtorGenerateRequest`.
+- `lua/ktor/body_gen.lua` — resolves `call.receive<T>()` against a lazy,
+  on-demand project-wide `data class`/`enum class` index (not part of the
+  reactive `ktor.index` scan) into a type-aware JSON skeleton. Returns `nil`
+  on anything it can't confidently resolve, so `request.lua` can fall back.
