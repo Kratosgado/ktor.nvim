@@ -430,6 +430,12 @@ end
 ---@param file string
 ---@return number|nil bufnr
 local function ensure_buffer(file)
+  local existing = vim.fn.bufnr(file)
+  if existing ~= -1 and vim.fn.buflisted(existing) == 1 then
+    local ok = pcall(vim.fn.bufload, existing)
+    return ok and existing or nil
+  end
+
   local bufnr = vim.fn.bufadd(file)
   if not bufnr or bufnr == 0 then
     return nil
@@ -439,9 +445,12 @@ local function ensure_buffer(file)
     return nil
   end
   vim.bo[bufnr].buflisted = false
-  if vim.bo[bufnr].filetype ~= "kotlin" then
-    vim.bo[bufnr].filetype = "kotlin"
-  end
+  -- Deliberately NOT setting filetype here: bufload() alone doesn't trigger
+  -- it (confirmed - plain bufload leaves filetype empty), but assigning
+  -- vim.bo[bufnr].filetype directly does fire FileType autocmds, which in a
+  -- real setup can mean LSP attach + every other kotlin ftplugin running for
+  -- files the user isn't even editing. get_parser(bufnr, "kotlin") below
+  -- passes the language explicitly, so treesitter never needed this anyway.
   return bufnr
 end
 
@@ -464,6 +473,16 @@ local function update_dependents(root_file, new_deps)
   scan_deps[root_file] = new_deps
 end
 
+---@param file string
+---@return string joined raw file text, "" if unreadable
+local function read_raw(file)
+  local ok, lines = pcall(vim.fn.readfile, file)
+  if not ok then
+    return ""
+  end
+  return table.concat(lines, "\n")
+end
+
 ---Full project-wide rescan: collect every `fun Route.*` extension function
 ---across all files first (so call sites resolve regardless of scan order),
 ---then walk each file's own routing{} entry points, expanding into
@@ -471,6 +490,14 @@ end
 ---the only path that walks the *whole* project; only call it for an
 ---explicit, user-requested refresh (see M.refresh / :KtorRefresh) - a debounced
 ---per-edit rescan uses the far cheaper smart_rescan below instead.
+---
+---A full recursive AST walk of every file - most of which (models, services,
+---tests, ...) have nothing to do with routing at all - dominates the cost
+---here (confirmed by profiling: walk time far exceeds I/O + parse time on a
+---~100-file project). A file can only define a `fun Route.*` if its raw text
+---contains "Route.", and can only be a routing{} root if it contains
+---"routing" - cheap plain-text checks that skip both the buffer load *and*
+---the expensive walk for every file that plainly can't match either.
 local function full_rescan()
   local cwd = vim.fn.getcwd()
   local files = vim.fn.globpath(cwd, "**/*.kt", false, true)
@@ -479,18 +506,29 @@ local function full_rescan()
   route_functions_by_file = {}
   ---@type table<string, number>
   local file_bufnrs = {}
+  ---@type table<string, boolean>
+  local needs_root_scan = {}
 
   for _, file in ipairs(files) do
     local key = file_key(file)
-    local bufnr = ensure_buffer(key)
-    if bufnr then
-      file_bufnrs[key] = bufnr
-      local owned = {}
-      for name, body in pairs(collect_route_functions(bufnr)) do
-        route_functions[name] = { bufnr = bufnr, file = key, body = body }
-        table.insert(owned, name)
+    local content = read_raw(file)
+    local maybe_route_fn = content:find("Route.", 1, true) ~= nil
+    local maybe_root = content:find("routing", 1, true) ~= nil
+
+    if maybe_route_fn or maybe_root then
+      local bufnr = ensure_buffer(key)
+      if bufnr then
+        file_bufnrs[key] = bufnr
+        needs_root_scan[key] = maybe_root
+        if maybe_route_fn then
+          local owned = {}
+          for name, body in pairs(collect_route_functions(bufnr)) do
+            route_functions[name] = { bufnr = bufnr, file = key, body = body }
+            table.insert(owned, name)
+          end
+          route_functions_by_file[key] = owned
+        end
       end
-      route_functions_by_file[key] = owned
     end
   end
 
@@ -499,11 +537,13 @@ local function full_rescan()
   dependents = {}
   scan_deps = {}
   for key, bufnr in pairs(file_bufnrs) do
-    local deps = {}
-    local unresolved = {}
-    new_by_file[key] = scan_buffer(bufnr, key, route_functions, deps, unresolved)
-    new_by_file_unresolved[key] = unresolved
-    update_dependents(key, deps)
+    if needs_root_scan[key] then
+      local deps = {}
+      local unresolved = {}
+      new_by_file[key] = scan_buffer(bufnr, key, route_functions, deps, unresolved)
+      new_by_file_unresolved[key] = unresolved
+      update_dependents(key, deps)
+    end
   end
   by_file = new_by_file
   by_file_unresolved = new_by_file_unresolved

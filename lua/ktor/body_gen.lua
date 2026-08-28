@@ -155,14 +155,32 @@ end
 ---this just re-walks every *.kt file each time rather than adding upkeep to
 ---the debounced edit path that ktor.index owns.
 ---@return table<string, KtorClassEntry>
+---@param file string
+---@return string joined raw file text, "" if unreadable
+local function read_raw(file)
+  local ok, lines = pcall(vim.fn.readfile, file)
+  if not ok then
+    return ""
+  end
+  return table.concat(lines, "\n")
+end
+
+---A full AST walk of every file - most of which have no class declaration
+---at all - is the dominant cost here (same finding as ktor.index's project
+---scan). Any `class`/`data class`/`enum class` declaration contains the
+---literal text "class " somewhere, so a cheap plain-text check skips both
+---the buffer load and the walk for files that plainly can't match.
+---@return table<string, KtorClassEntry>
 local function build_class_index()
   local files = vim.fn.globpath(vim.fn.getcwd(), "**/*.kt", false, true)
   local index = {}
   for _, file in ipairs(files) do
-    local bufnr = ensure_buffer(file)
-    if bufnr then
-      for name, entry in pairs(collect_classes(bufnr)) do
-        index[name] = entry
+    if read_raw(file):find("class ", 1, true) then
+      local bufnr = ensure_buffer(file)
+      if bufnr then
+        for name, entry in pairs(collect_classes(bufnr)) do
+          index[name] = entry
+        end
       end
     end
   end
